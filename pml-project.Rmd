@@ -1,0 +1,134 @@
+---
+title: "Machine Learning Class Project"
+author: "Bruce Montgomery"
+date: "Saturday, September 26, 2015"
+output: html_document
+---
+
+*Note: This report is for an academic assignment, and should not be used other than as an academic exercise.*
+
+## Introduction
+
+The goal of this data analysis is to use accelerometer data to classify five different types of barbell lifts.  Information on the data used in the report is available at: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). 
+
+This report outlines the modeling of that analysis, including how the model was built, how cross validation was used to assess the model, what the expected out of sample error is, and why analysis choices were made. The prediction model is also used to predict 20 different test cases.
+
+## Data preparation and pre-processing
+
+Using data provided, the csv files are read in, converting blank entries to NA.  The first seven columns of data in each data set are descriptors, and can be dropped.  For ease of analysis, all columns with any NA rows are also dropped.  These steps reduce the data set from 160 columns to 53.
+
+```{r}
+# Load the data, use headers, replace blanks with NAs
+setwd("~/RWork/MachLearnProject")
+train <- read.csv("pml-training.csv",header=TRUE,na.strings = c("", "NA"))
+test <- read.csv("pml-testing.csv",header=TRUE,na.strings = c("", "NA"))
+
+# Use dplyr for tidying the data, plyr is used by one of the models, and should be loaded prior to dplyr
+suppressWarnings(suppressPackageStartupMessages(library(plyr)))
+suppressWarnings(suppressPackageStartupMessages(library(dplyr)))
+train_df <- tbl_df(train)
+test_df <- tbl_df(test)
+
+# Drop the first 7 columns of each data set - they're just descriptors
+train_df <- select(train_df,-(1:7))
+test_df <- select(test_df,-(1:7))
+
+# Drop any columns with any NA in them
+train_df <- train_df[,colSums(is.na(train_df)) == 0]
+test_df <- test_df[,colSums(is.na(test_df)) == 0]
+```
+
+Preprocessing (and training/prediction later) is performed using the caret library.  Initial preprocessing includes checking for variables with near 0 variance (none found) and removing highly correlated (over .75) columns from the data.  This step further reduces the data set from 53 to 32 columns of variables for analysis.  The training data set is then prepared for cross validation, by breaking it into a training set (70% of the data - 13737 rows) and a validation set (30% of the data - 5885 rows).
+
+```{r}
+# Use caret for preProcessing and training
+suppressWarnings(suppressPackageStartupMessages(library(caret)))
+
+# any variables that are near 0 variance?
+nzv <- nearZeroVar(train_df, saveMetrics= TRUE)
+# no action for this test
+
+# Get rid of highly correlated columns (not counting classe)
+trainCor <- cor(train_df[,-length(train_df)])
+highCor <- findCorrelation(trainCor, cutoff=.75)
+train_df <- train_df[,-highCor]
+test_df <- test_df[,-highCor]
+
+# divide the data into a training and a validating set
+set.seed(3456)
+in_train <- createDataPartition(y=train_df$classe,p=.7,list=FALSE)
+train_set <- train_df[in_train,]
+valid_set <- train_df[-in_train,]
+```
+
+## Prediction models
+
+Based on the size and nature of the models, matching the large data sets against a classifier (the column "classe" in the pml-training set, with values A to E), three models were used for possible fits - random forest (rf), a Stochastic Gradient Boosting (gbm), and Support Vector Machines with Linear Kernel (svmLinear).  To reduce run time for modeling the random forest, fit and grid controls were set as [suggested in the forum] (https://class.coursera.org/predmachlearn-032/forum/thread?thread_id=107).
+
+```{r,results='hide',error=FALSE,message=FALSE,warning=FALSE}
+# try a random forest model (with settings for speed)
+fitControl <- trainControl(method = "none")
+tgrid <- expand.grid(mtry=c(6)) 
+modFit <- train(classe ~ ., data = train_set, method = "rf", trControl = fitControl, tuneGrid = tgrid)
+
+# try a gbm model "boosting"
+modFit2 <- train(classe ~ ., data = train_set, method = "gbm")
+
+# try svmLinear
+modFit3 <- train(classe ~ ., data = train_set, method = "svmLinear")
+```
+
+## Out of sample error expected and error estimation with cross validation
+
+Using the validation data set to create confusion matrices to check error estimation allows comparison of the methods.
+
+```{r,results='hide',error=FALSE,message=FALSE,warning=FALSE}
+# cross-validation/error estimation
+pred <- predict(modFit,valid_set)
+cm_rf <- confusionMatrix(valid_set$classe,pred)
+pred2 <- predict(modFit2,valid_set)
+cm_gbm <- confusionMatrix(valid_set$classe,pred2)
+pred3 <- predict(modFit3,valid_set)
+cm_svm <- confusionMatrix(valid_set$classe,pred3)
+```
+
+The accuracy of the rf model is the highest of the three, at over 99.5%.  This implies out of sample errors should be extremely low for this fit.  The gbm model is not as strong at 95.4% accuracy, and the svmLinear model is poor with accuracy of 64%.  Summary data is shown below (for rf, gbm, and svmLinear models respectively).
+
+```{r}
+cm_rf$overall
+cm_gbm$overall
+cm_svm$overall
+```
+
+This is reenforced by the tabular view of predictions in the rf model, which results in very few mis-classifications.
+
+```{r}
+cm_rf$table
+```
+
+## Examining selected fit and results of test cases
+
+For the selected rf model, here are the top contributing variables to the fit.
+
+```{r}
+rfImp <- varImp(modFit, scale = FALSE)
+plot(rfImp)
+```
+
+These are visualizations of the classe catagorizations based on the top three contributing variables from the rf fit.  The plot reenforces the complexity of variable relationships in the model.
+
+```{r}
+featurePlot(x = train_df[, c('yaw_belt','pitch_forearm','magnet_dumbbell_z')],
+            y = train_df$classe,
+            plot = "pairs",
+            ## Add a key at the top
+            auto.key = list(columns = 3))
+```
+
+Applying the rf model to the 20 test cases resulted in 100% correct predictions, shown below.
+
+```{r}
+# assume the rf model is keen, here are the predicted answers to the test set
+answers <- predict(modFit,test_df[,-length(test_df)])
+answers
+```
